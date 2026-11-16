@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-android:
@@ -65,3 +65,14 @@ jobs:
           path: artifacts/bubble-nightmare/android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish a direct APK download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp artifacts/bubble-nightmare/android/app/build/outputs/apk/release/app-release.apk Bubble-Nightmare.apk
+          gh release create "android-${{ github.run_number }}" Bubble-Nightmare.apk \
+            --title "Bubble Nightmare Android build ${{ github.run_number }}" \
+            --notes "Direct-install Android preview. Download Bubble-Nightmare.apk on your phone. This preview uses a development signing key and is not a Play Store release." \
+            --prerelease \
+            --target "${{ github.sha }}"
