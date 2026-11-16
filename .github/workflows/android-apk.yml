@@ -73,6 +73,6 @@ jobs:
           cp artifacts/bubble-nightmare/android/app/build/outputs/apk/release/app-release.apk Bubble-Nightmare.apk
           gh release create "android-${{ github.run_number }}" Bubble-Nightmare.apk \
             --title "Bubble Nightmare Android build ${{ github.run_number }}" \
-            --notes "Direct-install Android preview. Download Bubble-Nightmare.apk on your phone. This preview uses a development signing key and is not a Play Store release." \
-            --prerelease \
+            --notes "Bubble Nightmare 1.1: 15 campaign levels, shoot-and-swap matching, four family powers, and redesigned visuals. Download Bubble-Nightmare.apk on your phone. This standalone build uses a development signing key and is not a Play Store release." \
+            --latest \
             --target "${{ github.sha }}"

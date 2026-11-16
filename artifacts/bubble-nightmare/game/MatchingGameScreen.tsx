@@ -10,6 +10,7 @@ import {
   PanResponder,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -19,13 +20,13 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import {
-  BUBBLE_COLORS,
   LEVELS,
   blastLargestCluster,
   cellCenter,
   createLevelBoard,
   getLevel,
   isGoalComplete,
+  goalProgress,
   randomColor,
   removeLowestRow,
   resolveShot,
@@ -33,13 +34,23 @@ import {
   type AimResult,
   type Bubble,
   type BubbleColor,
+  type Cell,
   type Level,
   type Point,
-} from "@/game/engine";
-import { FAMILY, NIGHT_COLORS, type FamilyKey } from "@/constants/game";
+  resolveSwap,
+} from "@/game/campaignEngine";
+import {
+  BUBBLE_GRADIENTS,
+  CURSE_GRADIENT,
+  FAMILY,
+  NIGHT_COLORS,
+  STONE_GRADIENT,
+  type FamilyKey,
+} from "@/constants/game";
 
 type Screen = "menu" | "levels" | "help" | "game";
 type RunStatus = "playing" | "won" | "lost";
+type GameMode = "shoot" | "swap";
 type Usage = Record<FamilyKey, boolean>;
 
 interface RunState {
@@ -51,6 +62,7 @@ interface RunState {
   movesLeft: number;
   poppedCount: number;
   clearedCurses: number;
+  stonesCleared: number;
   score: number;
   usedPowers: Usage;
   status: RunStatus;
@@ -79,6 +91,7 @@ function pointFromEvent(event: GestureResponderEvent): Point {
 
 function goalLabel(level: Level): string {
   if (level.goal === "curses") return "CLEAR CURSED BUBBLES";
+  if (level.goal === "stones") return "BREAK THE STONES";
   if (level.goal === "clear") return "CLEAR THE BOARD";
   return "POP BUBBLES";
 }
@@ -87,6 +100,9 @@ function goalValue(run: RunState): string {
   if (run.level.goal === "curses") {
     return `${run.clearedCurses} / ${run.level.target}`;
   }
+  if (run.level.goal === "stones") {
+    return `${run.stonesCleared} / ${run.level.target}`;
+  }
   if (run.level.goal === "clear") {
     return `${run.bubbles.length} LEFT`;
   }
@@ -94,22 +110,30 @@ function goalValue(run: RunState): string {
 }
 
 function starsForRun(run: RunState): number {
-  const ratio = run.movesLeft / run.level.moves;
-  if (ratio >= 0.45) return 3;
-  if (ratio >= 0.2) return 2;
+  if (run.movesLeft >= run.level.threeStarMoves) return 3;
+  if (run.movesLeft >= run.level.twoStarMoves) return 2;
   return 1;
 }
+
+const BUBBLE_MARKS: Record<BubbleColor, keyof typeof Ionicons.glyphMap> = {
+  ember: "flame",
+  moss: "leaf",
+  lilac: "moon",
+  rose: "heart",
+};
 
 function BubbleDot({
   color,
   diameter,
   cursed = false,
   wild = false,
+  stone = false,
 }: {
   color: BubbleColor;
   diameter: number;
   cursed?: boolean;
   wild?: boolean;
+  stone?: boolean;
 }) {
   return (
     <View
@@ -119,18 +143,41 @@ function BubbleDot({
           width: diameter,
           height: diameter,
           borderRadius: diameter / 2,
-          backgroundColor: cursed ? NIGHT_COLORS.curse : BUBBLE_COLORS[color],
-          borderColor: cursed ? NIGHT_COLORS.ember : "rgba(255,255,255,0.72)",
-          borderWidth: cursed ? 2.5 : 1,
+          borderColor: stone
+            ? NIGHT_COLORS.paper
+            : cursed
+              ? NIGHT_COLORS.ember
+              : "rgba(255,255,255,0.76)",
+          borderWidth: stone || cursed ? 2 : 1,
         },
       ]}
     >
+      <LinearGradient
+        colors={
+          stone
+            ? STONE_GRADIENT
+            : cursed
+              ? CURSE_GRADIENT
+              : BUBBLE_GRADIENTS[color]
+        }
+        start={{ x: 0.15, y: 0 }}
+        end={{ x: 0.85, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
       <View style={styles.bubbleShine} />
-      {cursed ? (
+      {stone ? (
+        <Ionicons name="diamond" size={diameter * 0.4} color={NIGHT_COLORS.paper} />
+      ) : cursed ? (
         <Text style={styles.curseMark}>!</Text>
       ) : wild ? (
-        <Ionicons name="sparkles" size={diameter * 0.42} color="#fff5df" />
-      ) : null}
+        <Ionicons name="sparkles" size={diameter * 0.42} color={NIGHT_COLORS.paper} />
+      ) : (
+        <Ionicons
+          name={BUBBLE_MARKS[color]}
+          size={diameter * 0.33}
+          color={NIGHT_COLORS.paper}
+        />
+      )}
     </View>
   );
 }
@@ -148,6 +195,8 @@ export default function MatchingGameScreen() {
   const [storageError, setStorageError] = useState(false);
   const [feedback, setFeedback] = useState("Aim, match three, and clear the curse.");
   const [aim, setAim] = useState<AimResult | null>(null);
+  const [gameMode, setGameMode] = useState<GameMode>("shoot");
+  const [swapSelection, setSwapSelection] = useState<Cell | null>(null);
 
   runRef.current = run;
   const topInset =
@@ -155,8 +204,8 @@ export default function MatchingGameScreen() {
   const bottomInset =
     Platform.OS === "web" ? Math.max(insets.bottom, 34) : insets.bottom;
   const boardWidth = Math.max(280, screenWidth - 36);
-  const boardHeight = Math.min(450, Math.max(320, (screenHeight - topInset - bottomInset) * 0.49));
-  const bubbleDiameter = Math.min(44, boardWidth / 8);
+  const boardHeight = Math.min(450, Math.max(250, screenHeight - topInset - bottomInset - 400));
+  const bubbleDiameter = Math.min(44, boardWidth / 8, boardHeight / 9);
 
   const publishRun = (next: RunState) => {
     runRef.current = next;
@@ -209,12 +258,15 @@ export default function MatchingGameScreen() {
       movesLeft: level.moves,
       poppedCount: 0,
       clearedCurses: 0,
+      stonesCleared: 0,
       score: 0,
       usedPowers: freshUsage(),
       status: "playing",
       stars: 0,
     };
     publishRun(next);
+    setGameMode("shoot");
+    setSwapSelection(null);
     setFeedback("Drag to aim, then release to launch.");
     setAim(null);
     setScreen("game");
@@ -227,6 +279,7 @@ export default function MatchingGameScreen() {
         candidate.bubbles,
         candidate.poppedCount,
         candidate.clearedCurses,
+        candidate.stonesCleared,
       )
     ) {
       const stars = starsForRun(candidate);
@@ -280,16 +333,23 @@ export default function MatchingGameScreen() {
       movesLeft: current.movesLeft - 1,
       poppedCount: current.poppedCount + result.removed.length,
       clearedCurses: current.clearedCurses + result.clearedCurses,
+      stonesCleared: current.stonesCleared + result.stonesCleared,
       score: current.score + result.removed.length * 10,
     };
     setAim(null);
     setFeedback(
       result.matched
-        ? `${result.removed.length} bubbles popped.`
+        ? result.dropped.length > 0
+          ? `${result.removed.length} cleared — ${result.dropped.length} fell away.`
+          : `${result.removed.length} bubbles popped.`
         : "No match—every shot counts.",
     );
     if (result.matched) {
-      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      void Haptics.impactAsync(
+        result.dropped.length > 0
+          ? Haptics.ImpactFeedbackStyle.Medium
+          : Haptics.ImpactFeedbackStyle.Light,
+      );
     }
     resolveProgress(next);
   };
@@ -369,6 +429,7 @@ export default function MatchingGameScreen() {
       usedPowers,
       poppedCount: current.poppedCount + result.removed.length,
       clearedCurses: current.clearedCurses + result.clearedCurses,
+      stonesCleared: current.stonesCleared + result.stonesCleared,
       score: current.score + result.removed.length * 10,
     };
     setFeedback(
@@ -389,6 +450,49 @@ export default function MatchingGameScreen() {
       nextColor: current.currentColor,
     });
     void Haptics.selectionAsync();
+  };
+
+  const selectSwapCell = (cell: Cell) => {
+    const current = runRef.current;
+    if (!current || current.status !== "playing" || gameMode !== "swap") return;
+    if (!swapSelection) {
+      setSwapSelection(cell);
+      setFeedback("Now choose an adjacent bubble.");
+      void Haptics.selectionAsync();
+      return;
+    }
+    if (swapSelection.row === cell.row && swapSelection.col === cell.col) {
+      setSwapSelection(null);
+      setFeedback("Choose two neighboring bubbles to swap.");
+      return;
+    }
+    const result = resolveSwap(current.bubbles, swapSelection, cell);
+    setSwapSelection(null);
+    if (!result.matched) {
+      setFeedback("No match there. Try a neighboring pair.");
+      void Haptics.selectionAsync();
+      return;
+    }
+    const next: RunState = {
+      ...current,
+      bubbles: result.bubbles,
+      movesLeft: current.movesLeft - 1,
+      poppedCount: current.poppedCount + result.removed.length,
+      clearedCurses: current.clearedCurses + result.clearedCurses,
+      stonesCleared: current.stonesCleared + result.stonesCleared,
+      score: current.score + result.removed.length * 10,
+    };
+    setFeedback(
+      result.dropped.length > 0
+        ? `${result.removed.length} cleared — ${result.dropped.length} fell away.`
+        : `${result.removed.length} bubbles matched.`,
+    );
+    void Haptics.impactAsync(
+      result.dropped.length > 0
+        ? Haptics.ImpactFeedbackStyle.Medium
+        : Haptics.ImpactFeedbackStyle.Light,
+    );
+    resolveProgress(next);
   };
 
   const linePoints =
@@ -412,22 +516,28 @@ export default function MatchingGameScreen() {
           <View style={styles.brandRow}>
             <Ionicons name="moon" size={16} color={colors.primary} />
             <Text style={[styles.brand, { color: colors.mutedForeground }]}>
-              A FAMILY MATCH-3 NIGHTMARE
+              AIM · SWAP · SAVE THE FAMILY
             </Text>
           </View>
           <ImageBackground
             source={require("../assets/images/family-banner.jpg")}
-            style={styles.heroImage}
+            style={[styles.heroImage, { borderColor: colors.border }]}
             imageStyle={styles.heroImageRadius}
           >
             <LinearGradient
-              colors={["transparent", "rgba(16,23,19,0.2)", colors.background]}
+              colors={["transparent", "rgba(23,27,27,0.22)", colors.background]}
               style={styles.heroShade}
             />
             <View style={styles.heroTitleBlock}>
-              <Text style={styles.heroOverline}>THE HARVEST MOON IS UP</Text>
-              <Text style={styles.heroTitle}>BUBBLE</Text>
-              <Text style={styles.heroTitleAccent}>NIGHTMARE</Text>
+              <Text style={[styles.heroOverline, { color: colors.primary }]}>
+                THE HARVEST MOON IS UP
+              </Text>
+              <Text style={[styles.heroTitle, { color: colors.foreground }]}>
+                BUBBLE
+              </Text>
+              <Text style={[styles.heroTitleAccent, { color: colors.primary }]}>
+                NIGHTMARE
+              </Text>
             </View>
           </ImageBackground>
 
@@ -438,7 +548,10 @@ export default function MatchingGameScreen() {
           <View style={styles.familyStrip}>
             {FAMILY.map((member) => (
               <View key={member.key} style={styles.familyItem}>
-                <Image source={member.portrait} style={styles.familyPortrait} />
+                <Image
+                  source={member.portrait}
+                  style={[styles.familyPortrait, { borderColor: colors.border }]}
+                />
                 <Text style={[styles.familyName, { color: colors.foreground }]}>
                   {member.name}
                 </Text>
@@ -451,13 +564,17 @@ export default function MatchingGameScreen() {
               onPress={() => setScreen("levels")}
               style={styles.primaryButton}
               testID="play-button"
+              accessibilityRole="button"
+              accessibilityLabel={`Continue to level ${highestLevel}`}
             >
               <LinearGradient
                 colors={[colors.primary, NIGHT_COLORS.ember]}
                 style={styles.primaryButtonGradient}
               >
-                <Text style={styles.primaryButtonText}>PLAY LEVEL {highestLevel}</Text>
-                <Ionicons name="arrow-forward" size={20} color="#1c1510" />
+                <Text style={[styles.primaryButtonText, { color: colors.primaryForeground }]}>
+                  PLAY LEVEL {highestLevel}
+                </Text>
+                <Ionicons name="arrow-forward" size={20} color={colors.primaryForeground} />
               </LinearGradient>
             </Pressable>
             <Pressable
@@ -467,6 +584,8 @@ export default function MatchingGameScreen() {
                 { borderColor: colors.border, backgroundColor: colors.card },
               ]}
               testID="levels-button"
+              accessibilityRole="button"
+              accessibilityLabel="Open campaign levels"
             >
               <Ionicons name="grid-outline" size={18} color={colors.primary} />
               <Text style={[styles.secondaryButtonText, { color: colors.foreground }]}>
@@ -483,14 +602,20 @@ export default function MatchingGameScreen() {
                 ))}
               </View>
             </Pressable>
-            <Pressable onPress={() => setScreen("help")} style={styles.helpLink}>
+            <Pressable
+              onPress={() => setScreen("help")}
+              style={styles.helpLink}
+              testID="help-button"
+              accessibilityRole="button"
+              accessibilityLabel="How to play"
+            >
               <Text style={[styles.helpLinkText, { color: colors.mutedForeground }]}>
                 HOW TO PLAY
               </Text>
             </Pressable>
           </View>
           {storageError && (
-            <Text style={styles.storageWarning}>
+            <Text style={[styles.storageWarning, { color: colors.destructive }]}>
               Progress may not save on this device.
             </Text>
           )}
@@ -500,9 +625,9 @@ export default function MatchingGameScreen() {
       {screen === "levels" && (
         <View style={styles.contentScreen}>
           <View style={styles.screenHeader}>
-            <Pressable
+              <Pressable
               onPress={() => setScreen("menu")}
-              style={styles.backButton}
+              style={[styles.backButton, { backgroundColor: colors.card, borderColor: colors.border }]}
               accessibilityLabel="Back to menu"
               testID="levels-back"
             >
@@ -517,13 +642,27 @@ export default function MatchingGameScreen() {
               </Text>
             </View>
           </View>
-          <View style={styles.levelList}>
-            {LEVELS.map((level) => {
+          <ScrollView
+            style={styles.levelScroll}
+            contentContainerStyle={styles.levelList}
+            showsVerticalScrollIndicator={false}
+          >
+            {LEVELS.map((level, index) => {
               const locked = level.id > highestLevel;
               const earned = starsByLevel[level.id] ?? 0;
               return (
+                <React.Fragment key={level.id}>
+                {(index === 0 || LEVELS[index - 1].chapter !== level.chapter) && (
+                  <View style={styles.chapterHeader}>
+                    <Text style={[styles.chapterOverline, { color: colors.primary }]}>
+                      CHAPTER {String(level.chapter).padStart(2, "0")}
+                    </Text>
+                    <Text style={[styles.chapterTitle, { color: colors.foreground }]}>
+                      {level.chapterName}
+                    </Text>
+                  </View>
+                )}
                 <Pressable
-                  key={level.id}
                   disabled={locked}
                   onPress={() => startLevel(level.id)}
                   style={[
@@ -535,6 +674,8 @@ export default function MatchingGameScreen() {
                     },
                   ]}
                   testID={`level-${level.id}`}
+                  accessibilityLabel={`${locked ? "Locked" : "Play"} level ${level.id}, ${level.name}, ${earned} stars`}
+                  accessibilityRole="button"
                 >
                   <View style={styles.levelNumber}>
                     {locked ? (
@@ -564,9 +705,10 @@ export default function MatchingGameScreen() {
                     ))}
                   </View>
                 </Pressable>
+                </React.Fragment>
               );
             })}
-          </View>
+          </ScrollView>
           <View style={styles.levelFooter}>
             <Text style={[styles.levelFooterText, { color: colors.mutedForeground }]}>
               Complete a level to unlock the next one.
@@ -578,9 +720,9 @@ export default function MatchingGameScreen() {
       {screen === "help" && (
         <View style={styles.contentScreen}>
           <View style={styles.screenHeader}>
-            <Pressable
+              <Pressable
               onPress={() => setScreen("menu")}
-              style={styles.backButton}
+              style={[styles.backButton, { backgroundColor: colors.card, borderColor: colors.border }]}
               accessibilityLabel="Back to menu"
               testID="help-back"
             >
@@ -595,37 +737,38 @@ export default function MatchingGameScreen() {
               </Text>
             </View>
           </View>
+          <ScrollView style={styles.helpScroll} showsVerticalScrollIndicator={false}>
           <View style={[styles.helpCard, { backgroundColor: colors.card }]}>
             <View style={styles.helpStep}>
-              <View style={styles.helpIcon}>
+              <View style={[styles.helpIcon, { backgroundColor: colors.secondary }]}>
                 <Ionicons name="navigate" size={20} color={colors.primary} />
               </View>
               <View style={styles.helpCopy}>
                 <Text style={[styles.helpTitle, { color: colors.foreground }]}>
-                  Aim and launch
+                  Shoot or swap
                 </Text>
                 <Text style={[styles.helpBody, { color: colors.mutedForeground }]}>
-                  Drag across the board and release to send your bubble flying.
-                  Bounce shots off the sides to reach tricky gaps.
+                  In Shoot mode, drag and release to launch; bank shots off the
+                  walls. In Swap mode, tap two neighboring bubbles.
                 </Text>
               </View>
             </View>
             <View style={styles.helpStep}>
-              <View style={styles.helpIcon}>
+              <View style={[styles.helpIcon, { backgroundColor: colors.secondary }]}>
                 <Ionicons name="ellipse" size={20} color={colors.primary} />
               </View>
               <View style={styles.helpCopy}>
                 <Text style={[styles.helpTitle, { color: colors.foreground }]}>
-                  Match three or more
+                  Make a match
                 </Text>
                 <Text style={[styles.helpBody, { color: colors.mutedForeground }]}>
-                  Match same-color bubbles. Bubbles left hanging after a match
-                  fall away too. Tap the next bubble to swap it into the launcher.
+                  Connect three same-color bubbles to clear them. Unsupported
+                  bubbles fall, and a swap only counts when it makes a match.
                 </Text>
               </View>
             </View>
             <View style={styles.helpStep}>
-              <View style={styles.helpIcon}>
+              <View style={[styles.helpIcon, { backgroundColor: colors.secondary }]}>
                 <Ionicons name="flag" size={20} color={colors.primary} />
               </View>
               <View style={styles.helpCopy}>
@@ -657,6 +800,7 @@ export default function MatchingGameScreen() {
               </View>
             ))}
           </View>
+          </ScrollView>
         </View>
       )}
 
@@ -665,9 +809,13 @@ export default function MatchingGameScreen() {
           <View style={styles.gameHeader}>
             <Pressable
               onPress={() => setScreen("levels")}
-              style={styles.backButton}
+              style={[
+                styles.backButton,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
               accessibilityLabel="Return to levels"
               testID="game-back"
+              accessibilityRole="button"
             >
               <Ionicons name="chevron-back" size={23} color={colors.foreground} />
             </Pressable>
@@ -697,6 +845,21 @@ export default function MatchingGameScreen() {
               <Text style={[styles.objectiveValue, { color: colors.foreground }]}>
                 {goalValue(run)}
               </Text>
+              <View style={[styles.goalTrack, { backgroundColor: colors.border }]}>
+                <View
+                  style={[
+                    styles.goalFill,
+                    {
+                      width: `${Math.max(0, Math.min(100,
+                        run.level.goal === "clear"
+                          ? 100 - (run.bubbles.length / Math.max(1, createLevelBoard(run.level.id).length)) * 100
+                          : (goalProgress(run.level, run.bubbles, run.poppedCount, run.clearedCurses, run.stonesCleared) / Math.max(1, run.level.target)) * 100,
+                      ))}%`,
+                      backgroundColor: colors.primary,
+                    },
+                  ]}
+                />
+              </View>
             </View>
             <View style={styles.objectiveScore}>
               <Ionicons name="sparkles" size={16} color={colors.primary} />
@@ -704,6 +867,50 @@ export default function MatchingGameScreen() {
                 {run.score}
               </Text>
             </View>
+          </View>
+
+          <View style={[styles.modeSwitch, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            {(["shoot", "swap"] as const).map((mode) => {
+              const active = gameMode === mode;
+              return (
+                <Pressable
+                  key={mode}
+                  onPress={() => {
+                    setGameMode(mode);
+                    setSwapSelection(null);
+                    setAim(null);
+                    setFeedback(
+                      mode === "shoot"
+                        ? "Drag to aim, then release to launch."
+                        : "Tap two adjacent bubbles to make a match.",
+                    );
+                    void Haptics.selectionAsync();
+                  }}
+                  style={[
+                    styles.modeOption,
+                    active && { backgroundColor: colors.primary },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={`${mode === "shoot" ? "Shoot" : "Swap"} mode`}
+                  testID={`mode-${mode}`}
+                >
+                  <Ionicons
+                    name={mode === "shoot" ? "navigate" : "swap-horizontal"}
+                    size={15}
+                    color={active ? colors.primaryForeground : colors.mutedForeground}
+                  />
+                  <Text
+                    style={[
+                      styles.modeOptionText,
+                      { color: active ? colors.primaryForeground : colors.mutedForeground },
+                    ]}
+                  >
+                    {mode.toUpperCase()}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
 
           <View
@@ -716,21 +923,32 @@ export default function MatchingGameScreen() {
                 borderColor: colors.border,
               },
             ]}
-            {...panResponder.panHandlers}
+            {...(gameMode === "shoot" ? panResponder.panHandlers : {})}
             testID="bubble-board"
           >
             <View pointerEvents="none" style={styles.boardGlow} />
             {run.bubbles.map((bubble) => {
               const center = cellCenter(bubble, boardWidth, bubbleDiameter);
+              const selected =
+                swapSelection?.row === bubble.row && swapSelection?.col === bubble.col;
               return (
-                <View
+                <Pressable
                   key={bubble.id}
-                  pointerEvents="none"
+                  onPress={() => selectSwapCell({ row: bubble.row, col: bubble.col })}
+                  hitSlop={6}
+                  disabled={gameMode !== "swap" || run.status !== "playing" || bubble.kind === "stone"}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${bubble.kind} ${bubble.color} bubble at row ${bubble.row + 1}, column ${bubble.col + 1}`}
+                  testID={`bubble-${bubble.row}-${bubble.col}`}
                   style={[
                     styles.boardBubble,
+                    selected && [styles.selectedBubble, { borderColor: colors.primary }],
                     {
                       left: center.x - bubbleDiameter / 2,
                       top: center.y - bubbleDiameter / 2,
+                      width: bubbleDiameter,
+                      height: bubbleDiameter,
+                      borderRadius: bubbleDiameter / 2,
                     },
                   ]}
                 >
@@ -738,8 +956,9 @@ export default function MatchingGameScreen() {
                     color={bubble.color}
                     diameter={bubbleDiameter}
                     cursed={bubble.kind === "cursed"}
+                    stone={bubble.kind === "stone"}
                   />
-                </View>
+                </Pressable>
               );
             })}
             {aim &&
@@ -777,6 +996,7 @@ export default function MatchingGameScreen() {
                 ]}
               />
             )}
+            {gameMode === "shoot" && <>
             <View
               pointerEvents="none"
               style={[
@@ -818,6 +1038,7 @@ export default function MatchingGameScreen() {
                 wild={run.currentWild}
               />
             </View>
+            </>}
             {run.status !== "playing" && (
               <View style={styles.resultOverlay}>
                 <View style={[styles.resultCard, { backgroundColor: colors.card }]}>
@@ -848,10 +1069,14 @@ export default function MatchingGameScreen() {
                         style={styles.resultButton}
                         testID="next-level-button"
                       >
-                        <Text style={styles.resultButtonText}>
+                        <Text style={[styles.resultButtonText, { color: colors.primaryForeground }]}>
                           {run.level.id < LEVELS.length ? "NEXT LEVEL" : "LEVELS"}
                         </Text>
-                        <Ionicons name="arrow-forward" size={18} color="#1c1510" />
+                        <Ionicons
+                          name="arrow-forward"
+                          size={18}
+                          color={colors.primaryForeground}
+                        />
                       </Pressable>
                     </>
                   ) : (
@@ -860,8 +1085,12 @@ export default function MatchingGameScreen() {
                       style={styles.resultButton}
                       testID="retry-button"
                     >
-                      <Text style={styles.resultButtonText}>TRY AGAIN</Text>
-                      <Ionicons name="refresh" size={18} color="#1c1510" />
+                      <Text style={[styles.resultButtonText, { color: colors.primaryForeground }]}>TRY AGAIN</Text>
+                        <Ionicons
+                          name="refresh"
+                          size={18}
+                          color={colors.primaryForeground}
+                        />
                     </Pressable>
                   )}
                   <Pressable
@@ -885,34 +1114,47 @@ export default function MatchingGameScreen() {
           </Text>
 
           <View style={styles.shotControls}>
-            <View style={styles.nextBubble}>
-              <Text style={[styles.nextLabel, { color: colors.mutedForeground }]}>
-                NEXT
-              </Text>
-              <BubbleDot
-                color={run.nextColor}
-                diameter={Math.min(34, bubbleDiameter * 0.8)}
-              />
-            </View>
-            <Text style={[styles.aimHint, { color: colors.mutedForeground }]}>
-              DRAG TO AIM{"\n"}RELEASE TO SHOOT
-            </Text>
-            <Pressable
-              onPress={swapBubbles}
-              disabled={run.status !== "playing" || run.currentWild}
-              style={[
-                styles.swapButton,
-                {
-                  borderColor: colors.border,
-                  backgroundColor: colors.card,
-                  opacity: run.currentWild ? 0.5 : 1,
-                },
-              ]}
-              testID="swap-bubbles"
-            >
-              <Ionicons name="swap-horizontal" size={18} color={colors.primary} />
-              <Text style={[styles.swapText, { color: colors.foreground }]}>SWAP</Text>
-            </Pressable>
+            {gameMode === "shoot" ? (
+              <>
+                <View style={styles.nextBubble}>
+                  <Text style={[styles.nextLabel, { color: colors.mutedForeground }]}>
+                    NEXT
+                  </Text>
+                  <BubbleDot
+                    color={run.nextColor}
+                    diameter={Math.min(34, bubbleDiameter * 0.8)}
+                  />
+                </View>
+                <Text style={[styles.aimHint, { color: colors.mutedForeground }]}>
+                  DRAG TO AIM{"\n"}RELEASE TO SHOOT
+                </Text>
+                <Pressable
+                  onPress={swapBubbles}
+                  disabled={run.status !== "playing" || run.currentWild}
+                  style={[
+                    styles.swapButton,
+                    {
+                      borderColor: colors.border,
+                      backgroundColor: colors.card,
+                      opacity: run.currentWild ? 0.5 : 1,
+                    },
+                  ]}
+                  testID="swap-bubbles"
+                  accessibilityRole="button"
+                  accessibilityLabel="Swap current and next shot"
+                >
+                  <Ionicons name="swap-horizontal" size={18} color={colors.primary} />
+                  <Text style={[styles.swapText, { color: colors.foreground }]}>SHOT</Text>
+                </Pressable>
+              </>
+            ) : (
+              <View style={styles.swapInstruction}>
+                <Ionicons name="hand-left-outline" size={17} color={colors.primary} />
+                <Text style={[styles.aimHint, { color: colors.mutedForeground }]}>
+                  TAP TWO ADJACENT BUBBLES TO MATCH
+                </Text>
+              </View>
+            )}
           </View>
 
           <View style={styles.powersBlock}>
@@ -929,6 +1171,7 @@ export default function MatchingGameScreen() {
                     disabled={used || run.status !== "playing"}
                     style={[styles.powerButton, { opacity: used ? 0.38 : 1 }]}
                     accessibilityLabel={`${member.name}: ${member.power}${used ? ", used" : ""}`}
+                    accessibilityRole="button"
                     testID={`power-${member.key}`}
                   >
                     <View
@@ -947,6 +1190,11 @@ export default function MatchingGameScreen() {
                     <Text style={[styles.powerName, { color: colors.foreground }]}>
                       {member.name}
                     </Text>
+                    <Text style={[styles.powerRole, { color: colors.mutedForeground }]}>
+                      {member.role === "BOTTOM ROW" ? "LOW ROW" :
+                        member.role === "WILD SHOT" ? "WILD SHOT" :
+                        member.role === "THREE MORE MOVES" ? "+3 MOVES" : "CLUSTER"}
+                    </Text>
                   </Pressable>
                 );
               })}
@@ -961,29 +1209,31 @@ export default function MatchingGameScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    paddingHorizontal: 18,
+    paddingHorizontal: 16,
   },
   menu: {
     flex: 1,
     justifyContent: "center",
-    paddingBottom: 12,
+    paddingBottom: 8,
   },
   brandRow: {
     alignItems: "center",
     flexDirection: "row",
     gap: 8,
     justifyContent: "center",
-    marginBottom: 10,
+    marginBottom: 13,
   },
   brand: {
     fontFamily: "Inter_700Bold",
-    fontSize: 10,
-    letterSpacing: 2.2,
+    fontSize: 9,
+    letterSpacing: 2.4,
   },
   heroImage: {
-    height: "41%",
+    height: "36%",
     justifyContent: "flex-end",
     overflow: "hidden",
+    borderRadius: 24,
+    borderWidth: 1,
   },
   heroImageRadius: {
     borderRadius: 22,
@@ -995,56 +1245,52 @@ const styles = StyleSheet.create({
     padding: 18,
   },
   heroOverline: {
-    color: "#f5b86a",
     fontFamily: "Inter_700Bold",
     fontSize: 9,
     letterSpacing: 2,
     marginBottom: 5,
   },
   heroTitle: {
-    color: "#fff2db",
     fontFamily: "Inter_700Bold",
-    fontSize: 34,
+    fontSize: 35,
     letterSpacing: 1.2,
     lineHeight: 36,
   },
   heroTitleAccent: {
-    color: "#f59a49",
     fontFamily: "Inter_700Bold",
-    fontSize: 34,
+    fontSize: 35,
     letterSpacing: 1.2,
     lineHeight: 36,
   },
   menuSubtitle: {
     fontFamily: "Inter_500Medium",
     fontSize: 14,
-    marginTop: 10,
+    marginTop: 12,
     textAlign: "center",
   },
   familyStrip: {
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-around",
-    marginTop: 13,
+    marginTop: 15,
   },
   familyItem: {
     alignItems: "center",
     gap: 5,
   },
   familyPortrait: {
-    borderColor: "#59644a",
     borderRadius: 26,
     borderWidth: 1,
-    height: 52,
-    width: 52,
+    height: 54,
+    width: 54,
   },
   familyName: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 11,
   },
   menuActions: {
-    gap: 10,
-    marginTop: 19,
+    gap: 11,
+    marginTop: 21,
   },
   primaryButton: {
     borderRadius: 15,
@@ -1053,12 +1299,11 @@ const styles = StyleSheet.create({
   primaryButtonGradient: {
     alignItems: "center",
     flexDirection: "row",
-    height: 54,
+    height: 58,
     justifyContent: "center",
     gap: 10,
   },
   primaryButtonText: {
-    color: "#1c1510",
     fontFamily: "Inter_700Bold",
     fontSize: 14,
     letterSpacing: 1.2,
@@ -1068,7 +1313,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     flexDirection: "row",
-    height: 48,
+    height: 50,
     justifyContent: "center",
     gap: 10,
   },
@@ -1092,7 +1337,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1.4,
   },
   storageWarning: {
-    color: "#e99b89",
     fontFamily: "Inter_500Medium",
     fontSize: 11,
     marginTop: 6,
@@ -1100,19 +1344,21 @@ const styles = StyleSheet.create({
   },
   contentScreen: {
     flex: 1,
-    paddingTop: 8,
+    paddingTop: 10,
   },
   screenHeader: {
     alignItems: "center",
     flexDirection: "row",
     gap: 10,
-    marginBottom: 20,
+    marginBottom: 15,
   },
   backButton: {
     alignItems: "center",
-    height: 38,
+    height: 48,
     justifyContent: "center",
-    width: 30,
+    width: 48,
+    borderRadius: 16,
+    borderWidth: 1,
   },
   screenEyebrow: {
     fontFamily: "Inter_700Bold",
@@ -1120,20 +1366,39 @@ const styles = StyleSheet.create({
     letterSpacing: 1.8,
   },
   screenTitle: {
-    fontFamily: "Inter_700Bold",
+    fontFamily: "serif",
     fontSize: 23,
     marginTop: 3,
   },
+  levelScroll: {
+    flex: 1,
+  },
+  chapterHeader: {
+    marginBottom: 1,
+    marginTop: 9,
+    paddingHorizontal: 3,
+  },
+  chapterOverline: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 8,
+    letterSpacing: 1.7,
+  },
+  chapterTitle: {
+    fontFamily: "serif",
+    fontSize: 18,
+    marginTop: 3,
+  },
   levelList: {
-    gap: 10,
+    gap: 9,
+    paddingBottom: 12,
   },
   levelCard: {
     alignItems: "center",
     borderRadius: 16,
     borderWidth: 1,
     flexDirection: "row",
-    minHeight: 70,
-    paddingHorizontal: 13,
+    minHeight: 66,
+    paddingHorizontal: 12,
   },
   levelNumber: {
     alignItems: "center",
@@ -1176,13 +1441,15 @@ const styles = StyleSheet.create({
     gap: 18,
     padding: 16,
   },
+  helpScroll: {
+    flex: 1,
+  },
   helpStep: {
     flexDirection: "row",
     gap: 12,
   },
   helpIcon: {
     alignItems: "center",
-    backgroundColor: "rgba(245,154,73,0.12)",
     borderRadius: 12,
     height: 38,
     justifyContent: "center",
@@ -1236,7 +1503,7 @@ const styles = StyleSheet.create({
   gameScreen: {
     flex: 1,
     alignItems: "center",
-    paddingTop: 4,
+    paddingTop: 3,
   },
   gameHeader: {
     alignItems: "center",
@@ -1247,17 +1514,18 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   gameLevelName: {
-    fontFamily: "Inter_700Bold",
-    fontSize: 17,
+    fontFamily: "serif",
+    fontSize: 18,
     marginTop: 2,
   },
   movesBadge: {
     alignItems: "center",
     borderRadius: 12,
-    flexDirection: "row",
-    gap: 6,
-    paddingHorizontal: 11,
-    paddingVertical: 8,
+    flexDirection: "column",
+    gap: 0,
+    minWidth: 58,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
   movesNumber: {
     fontFamily: "Inter_700Bold",
@@ -1270,13 +1538,13 @@ const styles = StyleSheet.create({
   },
   objectiveCard: {
     alignItems: "center",
-    borderRadius: 13,
+    borderRadius: 16,
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 9,
-    marginTop: 10,
+    marginBottom: 8,
+    marginTop: 9,
     paddingHorizontal: 13,
-    paddingVertical: 8,
+    paddingVertical: 9,
     width: "100%",
   },
   objectiveCopy: {
@@ -1289,7 +1557,42 @@ const styles = StyleSheet.create({
   },
   objectiveValue: {
     fontFamily: "Inter_700Bold",
-    fontSize: 15,
+    fontSize: 16,
+  },
+  goalTrack: {
+    borderRadius: 4,
+    height: 4,
+    marginTop: 3,
+    overflow: "hidden",
+    width: 145,
+  },
+  goalFill: {
+    borderRadius: 4,
+    height: "100%",
+  },
+  modeSwitch: {
+    alignSelf: "center",
+    borderRadius: 15,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 4,
+    marginBottom: 8,
+    padding: 4,
+    width: 220,
+  },
+  modeOption: {
+    alignItems: "center",
+    borderRadius: 11,
+    flex: 1,
+    flexDirection: "row",
+    gap: 6,
+    height: 34,
+    justifyContent: "center",
+  },
+  modeOptionText: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 10,
+    letterSpacing: 1,
   },
   objectiveScore: {
     alignItems: "center",
@@ -1301,7 +1604,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   board: {
-    borderRadius: 20,
+    borderRadius: 23,
     borderWidth: 1,
     overflow: "hidden",
     position: "relative",
@@ -1318,10 +1621,14 @@ const styles = StyleSheet.create({
   boardBubble: {
     position: "absolute",
   },
+  selectedBubble: {
+    borderRadius: 30,
+    borderWidth: 3,
+  },
   bubble: {
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#000",
+    shadowColor: NIGHT_COLORS.ink,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.23,
     shadowRadius: 3,
@@ -1338,7 +1645,7 @@ const styles = StyleSheet.create({
     width: 11,
   },
   curseMark: {
-    color: "#ffe6c5",
+    color: NIGHT_COLORS.paper,
     fontFamily: "Inter_700Bold",
     fontSize: 17,
   },
@@ -1412,7 +1719,6 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   resultButtonText: {
-    color: "#1c1510",
     fontFamily: "Inter_700Bold",
     fontSize: 11,
     letterSpacing: 1,
@@ -1423,7 +1729,7 @@ const styles = StyleSheet.create({
   },
   feedback: {
     fontFamily: "Inter_500Medium",
-    fontSize: 11,
+    fontSize: 12,
     height: 22,
     paddingTop: 5,
     textAlign: "center",
@@ -1432,9 +1738,16 @@ const styles = StyleSheet.create({
   shotControls: {
     alignItems: "center",
     flexDirection: "row",
-    height: 52,
+    height: 54,
     justifyContent: "space-between",
     width: "100%",
+  },
+  swapInstruction: {
+    alignItems: "center",
+    flex: 1,
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "center",
   },
   nextBubble: {
     alignItems: "center",
@@ -1460,7 +1773,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     flexDirection: "row",
     gap: 5,
-    height: 36,
+    height: 46,
     justifyContent: "center",
     width: 82,
   },
@@ -1472,8 +1785,8 @@ const styles = StyleSheet.create({
   powersBlock: {
     borderTopColor: NIGHT_COLORS.border,
     borderTopWidth: 1,
-    marginTop: 2,
-    paddingTop: 7,
+    marginTop: 3,
+    paddingTop: 8,
     width: "100%",
   },
   powerHeading: {
@@ -1485,19 +1798,21 @@ const styles = StyleSheet.create({
   powerRow: {
     flexDirection: "row",
     justifyContent: "space-around",
-    marginTop: 7,
+    marginTop: 8,
   },
   powerButton: {
     alignItems: "center",
-    gap: 4,
-    minWidth: 60,
+    gap: 3,
+    minWidth: 68,
+    minHeight: 84,
+    paddingTop: 3,
   },
   powerPortraitFrame: {
     borderRadius: 23,
     borderWidth: 2,
-    height: 46,
+    height: 48,
     overflow: "hidden",
-    width: 46,
+    width: 48,
   },
   powerPortrait: {
     height: "100%",
@@ -1511,6 +1826,11 @@ const styles = StyleSheet.create({
   },
   powerName: {
     fontFamily: "Inter_600SemiBold",
-    fontSize: 10,
+    fontSize: 11,
+  },
+  powerRole: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 7,
+    letterSpacing: 0.55,
   },
 });

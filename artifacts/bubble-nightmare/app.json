@@ -2,7 +2,7 @@
   "expo": {
     "name": "Bubble Nightmare",
     "slug": "bubble-nightmare",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "bubble-nightmare",
@@ -12,7 +12,7 @@
     },
     "android": {
       "package": "com.bubblenightmare.game",
-      "versionCode": 1
+      "versionCode": 5
     },
     "web": {
       "favicon": "./assets/images/icon.png",
