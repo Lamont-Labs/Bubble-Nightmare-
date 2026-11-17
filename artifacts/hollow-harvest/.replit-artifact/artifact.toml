@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/hollow-harvest/"
+title = "The Hollow Harvest"
+description = "A playable third-person moonlit farm prototype built with Babylon.js."
+version = "1.0.0"
+id = "artifacts/hollow-harvest"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/hollow-harvest/" ]
+localPort = 23469
+
+[services.development]
+run = "pnpm --filter @workspace/hollow-harvest run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/hollow-harvest", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/hollow-harvest/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23469"
+BASE_PATH = "/hollow-harvest/"
