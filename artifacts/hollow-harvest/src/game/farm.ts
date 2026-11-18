@@ -2,6 +2,7 @@ import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
+import { PointLight } from "@babylonjs/core/Lights/pointLight";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { CreateBox } from "@babylonjs/core/Meshes/Builders/boxBuilder";
 import { CreateCylinder } from "@babylonjs/core/Meshes/Builders/cylinderBuilder";
@@ -9,6 +10,7 @@ import { CreateSphere } from "@babylonjs/core/Meshes/Builders/sphereBuilder";
 import { CreateTorus } from "@babylonjs/core/Meshes/Builders/torusBuilder";
 import { Scene } from "@babylonjs/core/scene";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 
 const MeshBuilder = { CreateBox, CreateCylinder, CreateSphere };
@@ -47,15 +49,34 @@ export function createFarm(scene: Scene) {
   sky.diffuse = Color3.FromHexString("#bbcfff"); sky.groundColor = Color3.FromHexString("#544264"); sky.intensity = 1.05;
   const moonlight = new DirectionalLight("moonlight", new Vector3(-0.65, -1, 0.35), scene);
   moonlight.diffuse = Color3.FromHexString("#b3cbff"); moonlight.intensity = 1.05;
+  const lanternLight = new PointLight("lantern-pool",new Vector3(0,3.6,2),scene);
+  lanternLight.diffuse=Color3.FromHexString("#ffb45f");lanternLight.intensity=1.15;lanternLight.range=10;
+  const barnLight = new PointLight("barn-window-glow",new Vector3(0,3.6,10.2),scene);
+  barnLight.diffuse=Color3.FromHexString("#ffc274");barnLight.intensity=1.55;barnLight.range=9;
   const materials = new Map<string, StandardMaterial>();
+  let woodTexture:DynamicTexture;
+  let earthTexture:DynamicTexture;
+  let clothTexture:DynamicTexture;
   function mat(hex: string, emit = false) {
     const key = hex + emit;
     let m = materials.get(key);
     if (!m) {
-      m = new StandardMaterial(key, scene);
-      m.diffuseColor = Color3.FromHexString(hex);
-      m.specularColor = Color3.Black();
-      if (emit) { m.emissiveColor = m.diffuseColor; m.disableLighting = true; }
+      const color=Color3.FromHexString(hex);
+      if(emit){
+        const lightMat=new StandardMaterial(key,scene);
+        lightMat.diffuseColor=color;lightMat.specularColor=Color3.Black();
+        lightMat.emissiveColor=color;lightMat.disableLighting=true;
+        m=lightMat;
+      }else{
+        const surfaceMat=new StandardMaterial(key,scene);
+        surfaceMat.diffuseColor=color;
+        surfaceMat.specularColor=Color3.FromHexString("#29251f");
+        surfaceMat.specularPower=40;
+        if(["#273733","#394239","#252f2d","#3e322e","#48483e"].includes(hex)) surfaceMat.diffuseTexture=earthTexture;
+        else if(["#6e4c63","#725268","#524860","#2c2935","#353541","#39303b","#55404d","#292733","#34303b","#302c39","#ae4241"].includes(hex)) surfaceMat.diffuseTexture=clothTexture;
+        else if(["#51302e","#3b282b","#886949","#71624e","#74634e"].includes(hex)) surfaceMat.diffuseTexture=woodTexture;
+        m=surfaceMat;
+      }
       materials.set(key, m);
     }
     return m;
@@ -78,6 +99,51 @@ export function createFarm(scene: Scene) {
   }
   let seed = 348129;
   const rand = () => ((seed = (Math.imul(seed,1664525)+1013904223)>>>0)/4294967296);
+  function makeSurfaceTexture(name:string,kind:"wood"|"earth"|"cloth") {
+    const size=256;
+    const texture=new DynamicTexture(name,{width:size,height:size},scene,true);
+    const context=texture.getContext() as CanvasRenderingContext2D;
+    const image=context.createImageData(size,size);
+    for(let i=0;i<image.data.length;i+=4){
+      const value=kind==="wood"?238+Math.floor(rand()*18):kind==="cloth"?232+Math.floor(rand()*24):224+Math.floor(rand()*31);
+      image.data[i]=value;image.data[i+1]=value;image.data[i+2]=value;image.data[i+3]=255;
+    }
+    context.putImageData(image,0,0);
+    if(kind==="wood"){
+      for(let i=0;i<86;i++){
+        const y=rand()*size,x=rand()*size,width=22+rand()*250;
+        context.fillStyle=rand()<0.5?"rgba(61,36,28,.09)":"rgba(255,244,219,.12)";
+        context.fillRect(x,y,width,rand()<0.13?2:1);
+      }
+      for(let i=0;i<3;i++){
+        const x=rand()*size,y=rand()*size;
+        context.strokeStyle="rgba(63,40,31,.14)";context.lineWidth=2;
+        context.beginPath();context.ellipse(x,y,5+rand()*8,2+rand()*3,0,0,Math.PI*2);context.stroke();
+      }
+      texture.uScale=2;texture.vScale=2;
+    }else if(kind==="cloth"){
+      context.lineWidth=1;
+      for(let i=0;i<64;i++){
+        const pos=i*4;
+        context.strokeStyle=i%2?"rgba(73,57,67,.08)":"rgba(255,239,220,.12)";
+        context.beginPath();context.moveTo(pos,0);context.lineTo(pos,size);context.stroke();
+        context.beginPath();context.moveTo(0,pos);context.lineTo(size,pos);context.stroke();
+      }
+      texture.uScale=3;texture.vScale=3;
+    }else{
+      for(let i=0;i<1900;i++){
+        const x=rand()*size,y=rand()*size,r=0.3+rand()*1.3;
+        context.fillStyle=rand()<0.5?"rgba(74,89,59,.13)":"rgba(255,255,237,.16)";
+        context.fillRect(x,y,r,r);
+      }
+      texture.uScale=18;texture.vScale=18;
+    }
+    texture.update(false);
+    return texture;
+  }
+  woodTexture=makeSurfaceTexture("weathered-wood","wood");
+  earthTexture=makeSurfaceTexture("moonlit-earth","earth");
+  clothTexture=makeSurfaceTexture("worn-fabric","cloth");
   const moon = sphere(15, 14, 77, 7, "#edf2d8", true, false);
   moon.material!.fogEnabled = false;
   for (let i=0;i<90;i++) {
@@ -109,6 +175,15 @@ export function createFarm(scene: Scene) {
   box(0,1.53,9.78,3.35,3.04,0.22,"#30262b");
   for (const dir of [-1,1]) {
     const brace=box(dir*0.76,1.56,9.63,0.15,3.28,0.1,"#886949");brace.rotation.z=dir*0.48;
+  }
+  for(let i=0;i<92;i++){
+    const x=-6.15+rand()*12.3,y=0.4+rand()*4.1;
+    box(x,y,9.865,0.16+rand()*0.72,0.012,0.014,i%3?"#422c29":"#694438");
+  }
+  for(let i=0;i<12;i++){
+    const x=-5.9+rand()*11.8,y=0.55+rand()*3.8;
+    const knot=sphere(x,y,9.855,0.085,"#442d2a",false,true);
+    knot.scaling.set(1.5,0.42,0.12);
   }
   // Well, pumpkin beds, tree line and fences.
   cone(-14,0.48,2,2.8,0.96,"#5f6570",2.7,10);
@@ -188,6 +263,17 @@ export function createFarm(scene: Scene) {
   const brim=place(MeshBuilder.CreateCylinder("hat-brim",{diameter:0.96,height:0.08,tessellation:9},scene),0,2.13,0,"#30283b",false,false);brim.parent=actor;brim.rotation.z=-0.12;
   const hat=place(MeshBuilder.CreateCylinder("hat-crown",{diameterTop:0.32,diameterBottom:0.58,height:0.35,tessellation:7},scene),0.03,2.27,0,"#493544",false,false);hat.parent=actor;hat.rotation.z=-0.14;
   const scarf=part(actor,0.28,1.59,-0.23,0.43,0.15,0.06,"#a9423c"); scarf.rotation.z=-0.25;
+  part(actor,-0.22,1.34,-0.22,0.22,0.24,0.035,"#403541");
+  for(let i=0;i<5;i++){
+    const stitch=part(actor,-0.30+i*0.04,1.21,-0.245,0.018,0.052,0.012,"#c59a62");
+    stitch.rotation.z=0.32;
+  }
+  for(let i=0;i<7;i++){
+    const angle=i*Math.PI*2/7;
+    const straw=cone(Math.cos(angle)*0.25,1.99+Math.sin(i*1.9)*0.05,-0.16+Math.sin(angle)*0.12,0.09,0.26,i%2?"#bc884d":"#d3a563",0.01,5);
+    straw.parent=actor;straw.position.set(Math.cos(angle)*0.25,1.99+Math.sin(i*1.9)*0.05,-0.16+Math.sin(angle)*0.12);
+    straw.rotation.z=-Math.cos(angle)*0.62;
+  }
   const limbs = [-1,1].map(side=>{
     const arm=new TransformNode("arm",scene);arm.parent=actor;arm.position.set(side*0.39,1.48,0);arm.rotation.z=side*0.26;
     part(arm,0,-0.26,0,0.20,0.61,0.20,"#725268");
@@ -200,6 +286,8 @@ export function createFarm(scene: Scene) {
   const family = FAMILY_MEMBERS.map(member => {
     const root = new TransformNode(`family-${member.id}`,scene);
     root.position.set(member.x,0,member.z);
+    const contactShadow=sphere(0,0,0,1.02,"#1a2028",false,false);
+    contactShadow.parent=root;contactShadow.position.set(0,0.028,0);contactShadow.scaling.y=0.035;
     const chest=part(root,0,1.2,0,0.62,0.78,0.38,member.color);
     const head=sphere(0,0,0,0.58,"#aa875f",false,false);
     head.parent=root;head.position.set(0,1.91,0);
@@ -207,6 +295,16 @@ export function createFarm(scene: Scene) {
     for(const side of [-1,1]){
       const eye=sphere(0,0,0,0.105,eyeColor,true,false);
       eye.parent=root;eye.position.set(side*0.12,1.94,0.248);
+      const pupil=sphere(0,0,0,0.052,"#241c20",false,false);
+      pupil.parent=root;pupil.position.set(side*0.12,1.94,0.334);pupil.scaling.set(0.8,0.82,0.36);
+    }
+    for(let i=0;i<5;i++){
+      const stitch=part(root,-0.13+i*0.065,1.65,0.282,0.018,0.055,0.015,"#35262a");
+      stitch.rotation.z=i%2?0.45:-0.45;
+    }
+    for(const y of [1.2,1.34,1.48]){
+      const button=sphere(0,y,0,0.045,"#c29661",false,false);
+      button.parent=root;button.position.set(0,y,0.205);button.scaling.z=0.28;
     }
     const belt=part(root,0,0.91,-0.2,0.64,0.13,0.08,"#a9423c");
     belt.rotation.z=member.id==="mother"?0.04:0;
