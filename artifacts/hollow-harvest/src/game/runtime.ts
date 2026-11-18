@@ -3,11 +3,11 @@ import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
 import { Ray } from "@babylonjs/core/Culling/ray";
 import { Scene } from "@babylonjs/core/scene";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { createFarm, LIMIT, obstacles, SPAWN } from "./farm";
+import { createFarm, LIMIT, obstacles, SPAWN, WISP_SAVE_KEY } from "./farm";
 
 export const SAVE_KEY = "hollow-harvest:foundation:v1";
 export type Mode = "webgl" | "webgpu";
-export type Stats = { fps: number; ms: number; backend: string; notice: string; location: string };
+export type Stats = { fps: number; ms: number; backend: string; notice: string; location: string; wisps: number; totalWisps: number; nearbyWisp: string | null };
 type Checkpoint = typeof SPAWN;
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 const TAU = Math.PI * 2;
@@ -25,6 +25,14 @@ function restore(): Checkpoint {
     }
   } catch { /* A missing or unreadable save does not block play. */ }
   return {...SPAWN};
+}
+function restoreWisps(validIds: Set<string>) {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(WISP_SAVE_KEY) ?? "[]");
+    return new Set(Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string" && validIds.has(id)) : []);
+  } catch {
+    return new Set<string>();
+  }
 }
 function placeName(x: number, z: number) {
   if (z > 7 && Math.abs(x)<13) return "The Old Barn";
@@ -54,7 +62,7 @@ function cameraClearance(target: Vector3, end: Vector3) {
 }
 
 export async function startGame(
-  canvas: HTMLCanvasElement, stick: HTMLElement, mode: Mode,
+  canvas: HTMLCanvasElement, stick: HTMLElement, interactButton: HTMLButtonElement, mode: Mode,
   onStats: (s:Stats)=>void, signal: AbortSignal,
 ): Promise<()=>void> {
   const initial=restore();
@@ -94,33 +102,47 @@ export async function startGame(
     renderer.setHardwareScalingLevel(Math.max(1, Math.min(3, (window.devicePixelRatio || 1)/1.4)));
     const scene=new Scene(renderer);
     const farm=createFarm(scene);
+    const collected=restoreWisps(new Set(farm.wisps.map(wisp=>wisp.id)));
+    for(const wisp of farm.wisps) if(collected.has(wisp.id)) wisp.root.setEnabled(false);
+    let nearbyWisp: string | null = null;
     const camera=new FreeCamera("third-person",Vector3.Zero(),scene);
     camera.minZ=0.08;camera.maxZ=170;camera.fov=0.91;
     scene.activeCamera=camera;
     let x=initial.x,z=initial.z,yaw=initial.yaw,pitch=initial.pitch,facing=yaw;
     let vx=0,vz=0,stride=0,phase=0,dirty=false,storageError=false;
-    let lx=0,ly=0,stickPointer:number|null=null,lookPointer:number|null=null;
+    let lx=0,ly=0,stickPointer:number|null=null,lookPointer:number|null=null,actionPressed=false;
     let lookX=0,lookY=0,cx=0,cy=0;
     const keys=new Set<string>();
     const listeners=new AbortController();
     const opts={signal:listeners.signal};
-    const keyset=new Set(["KeyW","KeyA","KeyS","KeyD","ArrowUp","ArrowDown","ArrowLeft","ArrowRight","KeyQ","KeyE","ShiftLeft","ShiftRight"]);
+    const keyset=new Set(["KeyW","KeyA","KeyS","KeyD","ArrowUp","ArrowDown","ArrowLeft","ArrowRight","KeyQ","KeyE","KeyF","ShiftLeft","ShiftRight"]);
     const setStick=(sx:number,sy:number)=>{
       lx=sx;ly=sy;
       stick.style.setProperty("--stick-x",`${sx*36}px`);
       stick.style.setProperty("--stick-y",`${-sy*36}px`);
     };
-    const reset=()=>{ keys.clear();stickPointer=null;lookPointer=null;setStick(0,0);vx=0;vz=0; };
+    const reset=()=>{ keys.clear();stickPointer=null;lookPointer=null;actionPressed=false;setStick(0,0);vx=0;vz=0; };
     const save=()=>{
       if(!dirty) return;
       try {localStorage.setItem(SAVE_KEY,JSON.stringify({x,z,yaw,pitch}));dirty=false;storageError=false;}
       catch {storageError=true;}
     };
-    const blur=()=>{reset();save();};
-    cleanup=()=>{listeners.abort();save();reset();};
+    let progressDirty=false;
+    const saveProgress=()=>{
+      if(!progressDirty) return;
+      try {localStorage.setItem(WISP_SAVE_KEY,JSON.stringify([...collected]));progressDirty=false;storageError=false;}
+      catch {storageError=true;}
+    };
+    const blur=()=>{reset();save();saveProgress();};
+    cleanup=()=>{listeners.abort();save();saveProgress();reset();};
     window.addEventListener("keydown",e=>{
       if(!keyset.has(e.code)||e.altKey||e.metaKey||e.ctrlKey ||
          (e.target instanceof HTMLElement && e.target.closest("button,select,input,textarea,[contenteditable],summary"))) return;
+      if(e.code==="KeyF"){
+        e.preventDefault();
+        if(!e.repeat) actionPressed=true;
+        return;
+      }
       e.preventDefault();keys.add(e.code);
     },opts);
     window.addEventListener("keyup",e=>{keys.delete(e.code);},opts);
@@ -128,6 +150,7 @@ export async function startGame(
     window.addEventListener("pagehide",blur,opts);
     document.addEventListener("visibilitychange",()=>{if(document.hidden) blur();},opts);
     document.addEventListener("focusin",e=>{if(e.target instanceof HTMLElement && e.target.closest("button,select,input,textarea,summary")) reset();},opts);
+    interactButton.addEventListener("click",()=>{if(nearbyWisp) actionPressed=true;},opts);
     function updateStick(e:PointerEvent) {
       const dx=e.clientX-cx,dy=cy-e.clientY,d=Math.hypot(dx,dy);
       if(d<5) setStick(0,0);
@@ -164,7 +187,7 @@ export async function startGame(
     let camYaw=yaw,camPitch=pitch;
     let statTime=0,frames=0,frameTime=0,saveTime=0,fps=0,ms=0,lastLocation="";
     const backend=renderer instanceof Engine ? "WebGL" : "WebGPU";
-    onStats({fps,ms,backend,notice,location:placeName(x,z)});
+    onStats({fps,ms,backend,notice,location:placeName(x,z),wisps:collected.size,totalWisps:farm.wisps.length,nearbyWisp});
     renderer.runRenderLoop(()=>{
       const raw=renderer.getDeltaTime()/1000,dt=Math.min(raw||0.016,0.05);
       if(document.hidden) return;
@@ -188,21 +211,44 @@ export async function startGame(
       farm.actor.position.set(x,0,z);farm.actor.rotation.y=facing;
       const groundSpeed=Math.hypot(vx,vz);
       stride+=(Math.min(1,groundSpeed/5)-stride)*damp;phase+=groundSpeed*1.65*dt;
-      farm.pose(stride,phase);
+       const time=performance.now()/1000;
+       farm.pose(stride,phase,time);
+       const currentWisp=farm.wisps
+         .filter(wisp=>!collected.has(wisp.id))
+         .sort((a,b)=>Math.hypot(a.x-x,a.z-z)-Math.hypot(b.x-x,b.z-z))[0];
+       const targetWisp=currentWisp && Math.hypot(currentWisp.x-x,currentWisp.z-z)<3.1 ? currentWisp : undefined;
+       const nextNearby=targetWisp?.name ?? null;
+       if(nextNearby!==nearbyWisp){
+         nearbyWisp=nextNearby;
+         interactButton.hidden=!nearbyWisp;
+         interactButton.textContent=nearbyWisp ? `Gather ${nearbyWisp} · F` : "Gather";
+         onStats({fps,ms,backend,notice,location:placeName(x,z),wisps:collected.size,totalWisps:farm.wisps.length,nearbyWisp});
+       }
+       if(actionPressed){
+         actionPressed=false;
+         if(targetWisp){
+           collected.add(targetWisp.id);
+           targetWisp.root.setEnabled(false);
+           progressDirty=true;
+           nearbyWisp=null;
+           interactButton.hidden=true;
+           onStats({fps,ms,backend,notice:"A lost ember returns to the field.",location:placeName(x,z),wisps:collected.size,totalWisps:farm.wisps.length,nearbyWisp});
+         }
+       }
       target.x+=(x-target.x)*(1-Math.exp(-16*dt));target.z+=(z-target.z)*(1-Math.exp(-16*dt));
       const back=Math.cos(camPitch)*6.3;
       wanted.set(target.x-Math.sin(camYaw)*back+Math.cos(camYaw)*0.58,target.y+Math.sin(camPitch)*6.3,target.z-Math.cos(camYaw)*back-Math.sin(camYaw)*0.58);
       camera.position.copyFrom(cameraClearance(target,wanted));camera.setTarget(target);
       scene.render();
       statTime+=raw;frameTime+=raw;frames++;saveTime+=raw;
-      if(saveTime>=1.25){save();saveTime=0;}
+       if(saveTime>=1.25){save();saveProgress();saveTime=0;}
       const location=placeName(x,z);
       if(statTime>=0.5){
         ms=1000*frameTime/frames;fps=ms>0?1000/ms:0;
-        onStats({fps,ms,backend,notice:storageError?"Progress could not be saved in this browser.":notice,location});
+         onStats({fps,ms,backend,notice:storageError?"Progress could not be saved in this browser.":notice,location,wisps:collected.size,totalWisps:farm.wisps.length,nearbyWisp});
         statTime=0;frames=0;frameTime=0;lastLocation=location;
       } else if(location!==lastLocation){
-        lastLocation=location;onStats({fps,ms,backend,notice:storageError?"Progress could not be saved in this browser.":notice,location});
+         lastLocation=location;onStats({fps,ms,backend,notice:storageError?"Progress could not be saved in this browser.":notice,location,wisps:collected.size,totalWisps:farm.wisps.length,nearbyWisp});
       }
     });
     const dispose=()=>{

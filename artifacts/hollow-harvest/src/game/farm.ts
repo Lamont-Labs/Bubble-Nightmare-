@@ -6,6 +6,7 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { CreateBox } from "@babylonjs/core/Meshes/Builders/boxBuilder";
 import { CreateCylinder } from "@babylonjs/core/Meshes/Builders/cylinderBuilder";
 import { CreateSphere } from "@babylonjs/core/Meshes/Builders/sphereBuilder";
+import { CreateTorus } from "@babylonjs/core/Meshes/Builders/torusBuilder";
 import { Scene } from "@babylonjs/core/scene";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
@@ -15,6 +16,12 @@ const MeshBuilder = { CreateBox, CreateCylinder, CreateSphere };
 export type Obstacle = { x: number; z: number; w: number; d: number };
 export const LIMIT = 43;
 export const SPAWN = { x: 0, z: -15, yaw: 0, pitch: 0.32 };
+export const WISP_SAVE_KEY = "hollow-harvest:progress:v1";
+export const WISP_LOCATIONS = [
+  { id: "pumpkin-row", name: "Pumpkin Row", x: -7, z: -8 },
+  { id: "barn-lantern", name: "Old Barn", x: 7, z: 1 },
+  { id: "stone-well", name: "Stone Well", x: -10, z: 2 },
+] as const;
 export const obstacles: Obstacle[] = [
   { x: 0, z: 15, w: 13, d: 10 },
   { x: -14, z: 2, w: 2.8, d: 2.8 },
@@ -142,6 +149,21 @@ export function createFarm(scene: Scene) {
     if(merged){merged.isPickable=false;merged.freezeWorldMatrix();}
   }
 
+  const wisps = WISP_LOCATIONS.map((spot, index) => {
+    const root = new TransformNode(`lost-ember-${spot.id}`, scene);
+    root.position.set(spot.x, 0, spot.z);
+    const orb = sphere(0, 1.12, 0, 0.48, "#ffd67a", true, false);
+    orb.parent = root;
+    orb.position.set(0, 1.12, 0);
+    const ring = place(
+      CreateTorus("ember-ring", { diameter: 0.86, thickness: 0.055, tessellation: 16 }, scene),
+      0, 1.12, 0, "#e99f50", true, false,
+    );
+    ring.parent = root;
+    ring.position.set(0, 1.12, 0);
+    return { ...spot, root, ring, phase: index * 2.1 };
+  });
+
   const actor = new TransformNode("scarecrow",scene);
   function part(parent: TransformNode, x:number,y:number,z:number,w:number,h:number,d:number,c:string) {
     const m=place(MeshBuilder.CreateBox("scarecrow-part",{width:w,height:h,depth:d},scene),x,y,z,c,false,false);m.parent=parent;return m;
@@ -169,9 +191,13 @@ export function createFarm(scene: Scene) {
     return {arm,leg};
   });
   const shadow=sphere(0,0.025,0,1.35,"#1a2327",false,false);shadow.scaling.y=0.028;
-  return { actor, pose(stride:number, phase:number) {
+  return { actor, wisps, pose(stride:number, phase:number, time=0) {
     shadow.position.x=actor.position.x;shadow.position.z=actor.position.z;
     torso.position.y=1.24+Math.sin(phase*2)*stride*0.035;
     limbs.forEach(({arm,leg},i)=>{ const wave=Math.sin(phase+i*Math.PI)*stride;leg.rotation.x=wave*0.61;arm.rotation.x=-wave*0.48; });
+    wisps.forEach(wisp=>{
+      wisp.root.position.y=Math.sin(time*1.5+wisp.phase)*0.13;
+      wisp.ring.rotation.y=time*0.55+wisp.phase;
+    });
   }};
 }

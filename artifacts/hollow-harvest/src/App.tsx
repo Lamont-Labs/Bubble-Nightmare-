@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { startGame } from './game/runtime';
 
 type Mode = 'webgl' | 'webgpu';
-type Stats = { fps: number; ms: number; backend: string; notice: string; location: string };
+type Stats = { fps: number; ms: number; backend: string; notice: string; location: string; wisps: number; totalWisps: number; nearbyWisp: string | null };
 
 const MODE_KEY = 'hollow-harvest:renderer';
 const hasWebGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
@@ -20,8 +20,9 @@ function initialMode(): Mode {
 function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stickRef = useRef<HTMLDivElement>(null);
+  const interactRef = useRef<HTMLButtonElement>(null);
   const [mode, setMode] = useState<Mode>(initialMode);
-  const [stats, setStats] = useState<Stats>({ fps: 0, ms: 0, backend: 'waking', notice: '', location: 'The Hollow' });
+  const [stats, setStats] = useState<Stats>({ fps: 0, ms: 0, backend: 'waking', notice: '', location: 'The Hollow', wisps: 0, totalWisps: 3, nearbyWisp: null });
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
   const [help, setHelp] = useState(false);
@@ -41,12 +42,13 @@ function App() {
     try { localStorage.setItem(MODE_KEY, mode); } catch { /* ignore */ }
     const canvas = canvasRef.current;
     const stick = stickRef.current;
-    if (!canvas || !stick) return;
+    const interactButton = interactRef.current;
+    if (!canvas || !stick || !interactButton) return;
     const ac = new AbortController();
     let dispose: (() => void) | null = null;
     setError('');
     setReady(false);
-    startGame(canvas, stick, mode, (s) => { if (!ac.signal.aborted) { setStats(s); setReady(true); } }, ac.signal)
+    startGame(canvas, stick, interactButton, mode, (s) => { if (!ac.signal.aborted) { setStats(s); setReady(true); } }, ac.signal)
       .then((d) => { if (ac.signal.aborted) d(); else dispose = d; })
       .catch((e: unknown) => { if (!ac.signal.aborted) setError(e instanceof Error ? e.message : String(e)); });
     return () => { ac.abort(); dispose?.(); };
@@ -87,7 +89,7 @@ function App() {
         </div>
       </div>
 
-      <header className="pointer-events-none absolute left-0 right-0 top-0 flex items-start justify-between gap-4 p-4 sm:p-6"
+      <header className="hh-topbar pointer-events-none absolute left-0 right-0 top-0 flex items-start justify-between gap-4 p-4 sm:p-6"
         style={{ paddingTop: 'max(16px, env(safe-area-inset-top))' }}>
         <div>
           <p className="hh-eyebrow">A scarecrow wakes</p>
@@ -95,8 +97,13 @@ function App() {
           <p key={stats.location} className="hh-loc hh-loc-anim mt-2 flex items-center gap-2" data-testid="text-location">
             <span className="hh-dot" aria-hidden /> {stats.location}
           </p>
+          <div className={`hh-panel hh-objective mt-4 px-3 py-2${stats.wisps === stats.totalWisps ? ' hh-objective-complete' : ''}`} data-testid="panel-objective" aria-live="off">
+            <span className="hh-eyebrow">{stats.wisps === stats.totalWisps ? 'The field remembers' : 'The first harvest'}</span>
+            <span className="hh-objective-count"><b data-testid="text-wisp-count">{stats.wisps}</b><span className="opacity-40"> / </span>{stats.totalWisps} lost embers</span>
+            {stats.wisps === stats.totalWisps && <span className="hh-objective-finish" data-testid="text-harvest-complete">The Hollow remembers its own.</span>}
+          </div>
         </div>
-        <div className="pointer-events-auto flex flex-col items-end gap-2">
+        <div className="hh-controls pointer-events-auto flex flex-col items-end gap-2">
           <div className="hh-panel hh-stat flex items-center gap-3 px-3 py-2" data-testid="status-perf" aria-live="off">
             <span><b data-testid="text-fps">{fps}</b> fps</span>
             <span className="opacity-40">/</span>
@@ -130,7 +137,7 @@ function App() {
             <li>On touch: left stick moves, drag elsewhere looks</li>
             <li><kbd>H</kbd> toggles these notes</li>
           </ul>
-          <p className="mt-4 text-[11px] opacity-60">Your wandering is saved automatically.</p>
+          <p className="mt-4 text-[11px] opacity-60">Find the three lost embers near the barn, rows, and well. Walk close and press F, or tap Gather. Your harvest is saved automatically.</p>
           <button className="hh-btn mt-3 -ml-3" onClick={() => { setHelp(false); canvasRef.current?.focus(); }} data-testid="button-close-help">Back to the field</button>
         </div>
       )}
@@ -144,6 +151,15 @@ function App() {
           Drag here to look
         </p>
       )}
+
+      <button
+        ref={interactRef}
+        className="hh-interact"
+        type="button"
+        hidden
+        aria-label="Gather nearby lost ember"
+        data-testid="button-gather"
+      >Gather</button>
 
       {!touch && (
         <p className="hh-eyebrow pointer-events-none absolute bottom-5 left-6 opacity-70">
