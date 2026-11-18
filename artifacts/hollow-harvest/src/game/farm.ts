@@ -13,7 +13,7 @@ import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 
 const MeshBuilder = { CreateBox, CreateCylinder, CreateSphere };
 
-export type Obstacle = { x: number; z: number; w: number; d: number };
+export type Obstacle = { x: number; z: number; w: number; d: number; height?: number };
 export const LIMIT = 43;
 export const SPAWN = { x: 0, z: -15, yaw: 0, pitch: 0.32 };
 export const WISP_SAVE_KEY = "hollow-harvest:progress:v1";
@@ -22,12 +22,19 @@ export const WISP_LOCATIONS = [
   { id: "barn-lantern", name: "Old Barn", x: 7, z: 1 },
   { id: "stone-well", name: "Stone Well", x: -10, z: 2 },
 ] as const;
+export const FAMILY_MEMBERS = [
+  { id: "father", name: "Dad", x: -6, z: 5.3, color: "#353541", line: "Those lights belong to all of us. Bring every last one home." },
+  { id: "mother", name: "Mom", x: -2.2, z: 4.1, color: "#39303b", line: "Listen between the rows. The lost embers are still calling." },
+  { id: "rabbit-teen", name: "Rabbit Teen", x: 2.2, z: 4.1, color: "#55404d", line: "I saw a little light drift past the pumpkins. It looked scared." },
+  { id: "pig-teen", name: "Pig Teen", x: 6, z: 5.3, color: "#393746", line: "The old well keeps secrets. One of those lights is down there." },
+] as const;
 export const obstacles: Obstacle[] = [
-  { x: 0, z: 15, w: 13, d: 10 },
-  { x: -14, z: 2, w: 2.8, d: 2.8 },
+  { x: 0, z: 15, w: 13, d: 10, height: 7.6 },
+  { x: -14, z: 2, w: 2.8, d: 2.8, height: 3.55 },
   { x: 0, z: -29, w: 26, d: 0.5 },
   { x: -13, z: -22, w: 0.5, d: 14 },
   { x: 13, z: -22, w: 0.5, d: 14 },
+  ...FAMILY_MEMBERS.map(({ x, z }) => ({ x, z, w: 0.55, d: 0.55, height: 2.6 })),
 ];
 
 export function createFarm(scene: Scene) {
@@ -190,14 +197,85 @@ export function createFarm(scene: Scene) {
     part(leg,0,-0.76,0.07,0.27,0.23,0.41,"#2c2935");
     return {arm,leg};
   });
+  const family = FAMILY_MEMBERS.map(member => {
+    const root = new TransformNode(`family-${member.id}`,scene);
+    root.position.set(member.x,0,member.z);
+    const chest=part(root,0,1.2,0,0.62,0.78,0.38,member.color);
+    const head=sphere(0,0,0,0.58,"#aa875f",false,false);
+    head.parent=root;head.position.set(0,1.91,0);
+    const eyeColor=member.id==="mother"?"#ffb06f":member.id==="pig-teen"?"#ffbdc4":"#ffcf82";
+    for(const side of [-1,1]){
+      const eye=sphere(0,0,0,0.105,eyeColor,true,false);
+      eye.parent=root;eye.position.set(side*0.12,1.94,0.248);
+    }
+    const belt=part(root,0,0.91,-0.2,0.64,0.13,0.08,"#a9423c");
+    belt.rotation.z=member.id==="mother"?0.04:0;
+    for(const side of [-1,1]){
+      const arm=new TransformNode(`${member.id}-arm`,scene);
+      arm.parent=root;arm.position.set(side*0.38,1.48,0);
+      part(arm,0,-0.27,0,0.18,0.58,0.18,member.color);
+      part(arm,0,-0.58,0,0.16,0.16,0.16,"#b58d64");
+      const leg=new TransformNode(`${member.id}-leg`,scene);
+      leg.parent=root;leg.position.set(side*0.18,0.8,0);
+      part(leg,0,-0.3,0,0.22,0.62,0.24,member.id==="mother"||member.id==="rabbit-teen"?"#292733":"#34303b");
+      part(leg,0,-0.67,0.07,0.25,0.2,0.36,"#27252d");
+    }
+    if(member.id==="father"){
+      for(const side of [-1,1]){
+        const horn=cone(side*0.28,2.26,0,0.25,0.58,"#ded0ab",0,5);
+        horn.parent=root;horn.position.set(side*0.28,2.26,0);horn.rotation.z=-side*0.42;
+      }
+      const muzzle=sphere(0,0,0,0.28,"#75533f",false,false);
+      muzzle.parent=root;muzzle.position.set(0,1.78,0.28);muzzle.scaling.set(1.18,0.8,0.62);
+      for(const side of [-1,1]){
+        const nostril=sphere(0,0,0,0.045,"#251e20",false,false);
+        nostril.parent=root;nostril.position.set(side*0.065,1.79,0.4);
+      }
+    } else if(member.id==="mother"){
+      for(let i=0;i<9;i++){
+        const angle=i*Math.PI*2/9;
+        const strand=cone(Math.cos(angle)*0.26,2.08+Math.sin(i*2)*0.07,Math.sin(angle)*0.23,0.1,0.55,i%2?"#bc8247":"#d29b56",0.015,5);
+        strand.parent=root;
+        strand.position.set(Math.cos(angle)*0.26,2.08+Math.sin(i*2)*0.07,Math.sin(angle)*0.23);
+        strand.rotation.z=-Math.cos(angle)*0.4;
+      }
+    } else if(member.id==="rabbit-teen"){
+      for(const side of [-1,1]){
+        const ear=part(root,side*0.17,2.29,0,0.19,0.72,0.15,"#998268");
+        ear.rotation.z=-side*0.12;
+        const inner=part(root,side*0.17,2.30,0.086,0.08,0.52,0.025,"#be7372");
+        inner.rotation.z=-side*0.12;
+      }
+      part(root,0,0.82,-0.12,0.78,0.38,0.43,"#302c39");
+    } else {
+      for(const side of [-1,1]){
+        const ear=part(root,side*0.22,2.09,0,0.2,0.25,0.16,"#a78165");
+        ear.rotation.z=-side*0.42;
+      }
+      const snout=sphere(0,0,0,0.3,"#cd898c",false,false);
+      snout.parent=root;snout.position.set(0,1.78,0.31);snout.scaling.set(1.2,0.8,0.68);
+      for(const side of [-1,1]){
+        const nostril=sphere(0,0,0,0.05,"#734f55",false,false);
+        nostril.parent=root;nostril.position.set(side*0.08,1.79,0.48);
+      }
+      part(root,0,1.6,-0.22,0.16,0.48,0.055,"#ae4241");
+    }
+    return {...member,root,chest};
+  });
   const shadow=sphere(0,0.025,0,1.35,"#1a2327",false,false);shadow.scaling.y=0.028;
-  return { actor, wisps, pose(stride:number, phase:number, time=0) {
+  return { actor, wisps, family, pose(stride:number, phase:number, time=0, playerX=0, playerZ=0) {
     shadow.position.x=actor.position.x;shadow.position.z=actor.position.z;
     torso.position.y=1.24+Math.sin(phase*2)*stride*0.035;
     limbs.forEach(({arm,leg},i)=>{ const wave=Math.sin(phase+i*Math.PI)*stride;leg.rotation.x=wave*0.61;arm.rotation.x=-wave*0.48; });
     wisps.forEach(wisp=>{
       wisp.root.position.y=Math.sin(time*1.5+wisp.phase)*0.13;
       wisp.ring.rotation.y=time*0.55+wisp.phase;
+    });
+    family.forEach((member,index)=>{
+      member.root.position.y=Math.sin(time*0.75+index*1.7)*0.025;
+      const dx=playerX-member.x,dz=playerZ-member.z;
+      if(Math.hypot(dx,dz)<10) member.root.rotation.y=Math.atan2(dx,dz);
+      member.chest.position.y=1.2+Math.sin(time*0.8+index)*0.018;
     });
   }};
 }

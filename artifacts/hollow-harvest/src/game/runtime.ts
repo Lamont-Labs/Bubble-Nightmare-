@@ -3,11 +3,14 @@ import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
 import { Ray } from "@babylonjs/core/Culling/ray";
 import { Scene } from "@babylonjs/core/scene";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { createFarm, LIMIT, obstacles, SPAWN, WISP_SAVE_KEY } from "./farm";
+import { createFarm, FAMILY_MEMBERS, LIMIT, obstacles, SPAWN, WISP_SAVE_KEY } from "./farm";
 
 export const SAVE_KEY = "hollow-harvest:foundation:v1";
 export type Mode = "webgl" | "webgpu";
-export type Stats = { fps: number; ms: number; backend: string; notice: string; location: string; wisps: number; totalWisps: number; nearbyWisp: string | null };
+export type NearbyAction = { id: string; kind: "wisp" | "family"; label: string };
+export type Dialogue = { speaker: string; text: string };
+export type Guidance = { name: string; distance: number; angle: number };
+export type Stats = { fps: number; ms: number; backend: string; notice: string; location: string; wisps: number; totalWisps: number; nearby: NearbyAction | null; dialogue: Dialogue | null; guidance: Guidance | null };
 type Checkpoint = typeof SPAWN;
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 const TAU = Math.PI * 2;
@@ -46,7 +49,7 @@ function cameraClearance(target: Vector3, end: Vector3) {
   const ray=new Ray(target,delta.normalize(),len);
   let distance=len;
   for(const o of obstacles) {
-    const height=o.z===15 ? 7.6 : o.x===-14 ? 3.55 : 1.5;
+    const height=o.height ?? 1.5;
     const lo=new Vector3(o.x-o.w/2-0.22,-0.25,o.z-o.d/2-0.22);
     const hi=new Vector3(o.x+o.w/2+0.22,height,o.z+o.d/2+0.22);
     if(!ray.intersectsBoxMinMax(lo,hi)) continue;
@@ -104,7 +107,10 @@ export async function startGame(
     const farm=createFarm(scene);
     const collected=restoreWisps(new Set(farm.wisps.map(wisp=>wisp.id)));
     for(const wisp of farm.wisps) if(collected.has(wisp.id)) wisp.root.setEnabled(false);
-    let nearbyWisp: string | null = null;
+    let nearby: NearbyAction | null = null;
+    let dialogue: Dialogue | null = null;
+    let dialogueExpiresAt = 0;
+    let guidance: Guidance | null = null;
     const camera=new FreeCamera("third-person",Vector3.Zero(),scene);
     camera.minZ=0.08;camera.maxZ=170;camera.fov=0.91;
     scene.activeCamera=camera;
@@ -150,7 +156,7 @@ export async function startGame(
     window.addEventListener("pagehide",blur,opts);
     document.addEventListener("visibilitychange",()=>{if(document.hidden) blur();},opts);
     document.addEventListener("focusin",e=>{if(e.target instanceof HTMLElement && e.target.closest("button,select,input,textarea,summary")) reset();},opts);
-    interactButton.addEventListener("click",()=>{if(nearbyWisp) actionPressed=true;},opts);
+    interactButton.addEventListener("click",()=>{if(nearby) actionPressed=true;},opts);
     function updateStick(e:PointerEvent) {
       const dx=e.clientX-cx,dy=cy-e.clientY,d=Math.hypot(dx,dy);
       if(d<5) setStick(0,0);
@@ -187,7 +193,11 @@ export async function startGame(
     let camYaw=yaw,camPitch=pitch;
     let statTime=0,frames=0,frameTime=0,saveTime=0,fps=0,ms=0,lastLocation="";
     const backend=renderer instanceof Engine ? "WebGL" : "WebGPU";
-    onStats({fps,ms,backend,notice,location:placeName(x,z),wisps:collected.size,totalWisps:farm.wisps.length,nearbyWisp});
+    const publishStats=()=>onStats({
+      fps,ms,backend,notice,location:placeName(x,z),
+      wisps:collected.size,totalWisps:farm.wisps.length,nearby,dialogue,guidance,
+    });
+    publishStats();
     renderer.runRenderLoop(()=>{
       const raw=renderer.getDeltaTime()/1000,dt=Math.min(raw||0.016,0.05);
       if(document.hidden) return;
@@ -212,27 +222,45 @@ export async function startGame(
       const groundSpeed=Math.hypot(vx,vz);
       stride+=(Math.min(1,groundSpeed/5)-stride)*damp;phase+=groundSpeed*1.65*dt;
        const time=performance.now()/1000;
-       farm.pose(stride,phase,time);
-       const currentWisp=farm.wisps
-         .filter(wisp=>!collected.has(wisp.id))
+       farm.pose(stride,phase,time,x,z);
+       if(dialogue && time>=dialogueExpiresAt){
+         dialogue=null;
+         publishStats();
+       }
+       const candidates=[
+         ...farm.wisps.filter(wisp=>!collected.has(wisp.id)).map(wisp=>({...wisp,kind:"wisp" as const,label:wisp.name})),
+         ...farm.family.map(member=>({...member,kind:"family" as const,label:member.name})),
+       ];
+       const candidate=candidates
          .sort((a,b)=>Math.hypot(a.x-x,a.z-z)-Math.hypot(b.x-x,b.z-z))[0];
-       const targetWisp=currentWisp && Math.hypot(currentWisp.x-x,currentWisp.z-z)<3.1 ? currentWisp : undefined;
-       const nextNearby=targetWisp?.name ?? null;
-       if(nextNearby!==nearbyWisp){
-         nearbyWisp=nextNearby;
-         interactButton.hidden=!nearbyWisp;
-         interactButton.textContent=nearbyWisp ? `Gather ${nearbyWisp} · F` : "Gather";
-         onStats({fps,ms,backend,notice,location:placeName(x,z),wisps:collected.size,totalWisps:farm.wisps.length,nearbyWisp});
+       const actionTarget=candidate && Math.hypot(candidate.x-x,candidate.z-z)<3.1 ? candidate : undefined;
+       const nextNearby=actionTarget ? {id:actionTarget.id,kind:actionTarget.kind,label:actionTarget.label} : null;
+       if(nextNearby?.id!==nearby?.id || nextNearby?.kind!==nearby?.kind){
+         nearby=nextNearby;
+         interactButton.hidden=!nearby;
+         interactButton.textContent=nearby ? `${nearby.kind==="wisp"?"Gather":"Talk to"} ${nearby.label} · F` : "Interact";
+         publishStats();
        }
        if(actionPressed){
          actionPressed=false;
-         if(targetWisp){
-           collected.add(targetWisp.id);
-           targetWisp.root.setEnabled(false);
+         if(actionTarget?.kind==="wisp"){
+           collected.add(actionTarget.id);
+           actionTarget.root.setEnabled(false);
            progressDirty=true;
-           nearbyWisp=null;
-           interactButton.hidden=true;
-           onStats({fps,ms,backend,notice:"A lost ember returns to the field.",location:placeName(x,z),wisps:collected.size,totalWisps:farm.wisps.length,nearbyWisp});
+           notice="A lost ember returns to the field.";
+           publishStats();
+         } else if(actionTarget?.kind==="family"){
+           const member=FAMILY_MEMBERS.find(person=>person.id===actionTarget.id);
+           if(member){
+             dialogue={
+               speaker:member.name,
+               text:collected.size===farm.wisps.length
+                 ? "The lights are home. And so are we."
+                 : member.line,
+             };
+             dialogueExpiresAt=time+4.5;
+             publishStats();
+           }
          }
        }
       target.x+=(x-target.x)*(1-Math.exp(-16*dt));target.z+=(z-target.z)*(1-Math.exp(-16*dt));
@@ -245,10 +273,23 @@ export async function startGame(
       const location=placeName(x,z);
       if(statTime>=0.5){
         ms=1000*frameTime/frames;fps=ms>0?1000/ms:0;
-         onStats({fps,ms,backend,notice:storageError?"Progress could not be saved in this browser.":notice,location,wisps:collected.size,totalWisps:farm.wisps.length,nearbyWisp});
+         const nextEmber=farm.wisps
+           .filter(wisp=>!collected.has(wisp.id))
+           .reduce<typeof farm.wisps[number] | undefined>((closest,wisp)=>
+             !closest || Math.hypot(wisp.x-x,wisp.z-z)<Math.hypot(closest.x-x,closest.z-z) ? wisp : closest,
+           undefined);
+         guidance=nextEmber ? {
+           name:nextEmber.name,
+           distance:Math.hypot(nextEmber.x-x,nextEmber.z-z),
+           angle:Math.atan2(nextEmber.x-x,nextEmber.z-z)-camYaw,
+         } : null;
+         if(storageError) notice="Progress could not be saved in this browser.";
+         publishStats();
         statTime=0;frames=0;frameTime=0;lastLocation=location;
       } else if(location!==lastLocation){
-         lastLocation=location;onStats({fps,ms,backend,notice:storageError?"Progress could not be saved in this browser.":notice,location,wisps:collected.size,totalWisps:farm.wisps.length,nearbyWisp});
+         lastLocation=location;
+         if(storageError) notice="Progress could not be saved in this browser.";
+         publishStats();
       }
     });
     const dispose=()=>{

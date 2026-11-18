@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { startGame } from './game/runtime';
 
 type Mode = 'webgl' | 'webgpu';
-type Stats = { fps: number; ms: number; backend: string; notice: string; location: string; wisps: number; totalWisps: number; nearbyWisp: string | null };
+type Stats = { fps: number; ms: number; backend: string; notice: string; location: string; wisps: number; totalWisps: number; nearby: { id: string; kind: 'wisp' | 'family'; label: string } | null; dialogue: { speaker: string; text: string } | null; guidance: { name: string; distance: number; angle: number } | null };
 
 const MODE_KEY = 'hollow-harvest:renderer';
 const hasWebGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
@@ -22,7 +22,7 @@ function App() {
   const stickRef = useRef<HTMLDivElement>(null);
   const interactRef = useRef<HTMLButtonElement>(null);
   const [mode, setMode] = useState<Mode>(initialMode);
-  const [stats, setStats] = useState<Stats>({ fps: 0, ms: 0, backend: 'waking', notice: '', location: 'The Hollow', wisps: 0, totalWisps: 3, nearbyWisp: null });
+  const [stats, setStats] = useState<Stats>({ fps: 0, ms: 0, backend: 'waking', notice: '', location: 'The Hollow', wisps: 0, totalWisps: 3, nearby: null, dialogue: null, guidance: null });
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
   const [help, setHelp] = useState(false);
@@ -100,6 +100,7 @@ function App() {
           <div className={`hh-panel hh-objective mt-4 px-3 py-2${stats.wisps === stats.totalWisps ? ' hh-objective-complete' : ''}`} data-testid="panel-objective" aria-live="off">
             <span className="hh-eyebrow">{stats.wisps === stats.totalWisps ? 'The field remembers' : 'The first harvest'}</span>
             <span className="hh-objective-count"><b data-testid="text-wisp-count">{stats.wisps}</b><span className="opacity-40"> / </span>{stats.totalWisps} lost embers</span>
+            {stats.guidance && <span className="hh-guidance" data-testid="text-guidance"><span className="hh-guide-arrow" style={{ transform: `rotate(${stats.guidance.angle}rad)` }} aria-hidden>↑</span><span>Next: {stats.guidance.name} · {Math.round(stats.guidance.distance)}m</span></span>}
             {stats.wisps === stats.totalWisps && <span className="hh-objective-finish" data-testid="text-harvest-complete">The Hollow remembers its own.</span>}
           </div>
         </div>
@@ -134,10 +135,11 @@ function App() {
             <li>Drag the field to look around</li>
             <li><kbd>Q</kbd> <kbd>E</kbd> orbit the camera</li>
             <li>Hold <kbd>Shift</kbd> to sprint</li>
-            <li>On touch: left stick moves, drag elsewhere looks</li>
+            <li>Walk close to a family member or ember and press <kbd>F</kbd></li>
+            <li>On touch: left stick moves, drag elsewhere looks, tap the nearby prompt</li>
             <li><kbd>H</kbd> toggles these notes</li>
           </ul>
-          <p className="mt-4 text-[11px] opacity-60">Find the three lost embers near the barn, rows, and well. Walk close and press F, or tap Gather. Your harvest is saved automatically.</p>
+          <p className="mt-4 text-[11px] opacity-60">Find the three lost embers near the barn, rows, and well, then talk to your family at the lantern circle. Your harvest is saved automatically.</p>
           <button className="hh-btn mt-3 -ml-3" onClick={() => { setHelp(false); canvasRef.current?.focus(); }} data-testid="button-close-help">Back to the field</button>
         </div>
       )}
@@ -145,6 +147,13 @@ function App() {
       <div ref={stickRef} className="hh-stick" style={{ display: touch ? 'block' : 'none' }} aria-label="Movement joystick" data-testid="control-joystick">
         <div className="hh-knob" />
       </div>
+
+      {stats.dialogue && (
+        <div className="hh-dialogue hh-panel" role="status" data-testid="text-dialogue">
+          <span className="hh-eyebrow">{stats.dialogue.speaker}</span>
+          <p className="hh-dialogue-line">“{stats.dialogue.text}”</p>
+        </div>
+      )}
 
       {touch && lookHint && (
         <p className="hh-hint hh-eyebrow pointer-events-none absolute right-6 text-right" style={{ bottom: 'max(36px, env(safe-area-inset-bottom))' }} data-testid="text-look-hint">
@@ -157,13 +166,13 @@ function App() {
         className="hh-interact"
         type="button"
         hidden
-        aria-label="Gather nearby lost ember"
+        aria-label="Interact with the nearby character or lost ember"
         data-testid="button-gather"
-      >Gather</button>
+      >Interact</button>
 
       {!touch && (
         <p className="hh-eyebrow pointer-events-none absolute bottom-5 left-6 opacity-70">
-          <kbd>WASD</kbd> move · drag look · <kbd>Q</kbd><kbd>E</kbd> orbit · <kbd>Shift</kbd> sprint · <kbd>H</kbd> help
+          <kbd>WASD</kbd> move · drag look · <kbd>Q</kbd><kbd>E</kbd> orbit · <kbd>F</kbd> interact · <kbd>Shift</kbd> sprint · <kbd>H</kbd> help
         </p>
       )}
     </main>
